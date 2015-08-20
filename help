@@ -1,0 +1,218 @@
+
+
+Pre-requisite:
+Before you start, make sure the following packages are installed on the system using your favorite package manager.
+
+sudo apt-get install build-essential autoconf automake \
+                     libtool libfcgi-dev spawn-fcgi \
+                     libssl-dev nginx git-core
+
+fcgiwrap
+
+Now we need to install fcgiwrap. fcgiwrap is required to passes the request from nginx to the cgit.cgi script as nginx doesn't handle CGI.
+
+git clone git://github.com/gnosek/fcgiwrap.git
+cd fcgiwrap/
+autoreconf -i
+make
+sudo make install
+sudo cp fcgiwrap /usr/local/bin/
+
+cgit
+
+Clone the cgit repository.
+
+git clone git://hjemli.net/pub/git/cgit
+
+Create a file called cgit.conf in the cgit directory with the following contents
+
+prefix=/usr/local/cgit
+CGIT_SCRIPT_PATH=$(prefix)/bin
+CGIT_DATA_PATH=$(prefix)/share
+
+Now compile and install cgit as follows. This installs the cgit.cgi at /usr/local/cgit/bin and cgit.png & cgit.css at /usr/local/cgit/share.
+
+cd cgit
+git submodule init
+git submodule update
+make
+sudo make install
+
+configuration
+
+Now that we have installed nginx, fcgiwrap & cgit, let us configure our setup. Clone my repository if you don't want to type out the following configurations.
+
+Create a file called cgit-fcgiwrap in the /usr/local/bin directory with the following contents. This will create a unix socket for nginx to pass the requests.
+
+#!/bin/bash
+
+FASTCGI_USER=www-data
+FASTCGI_GROUP=www-data
+SOCKET=/var/run/cgit-fastcgi/cgit-fastcgi.socket
+PIDFILE=/var/run/cgit-fastcgi/cgit-fastcgi.pid
+CGIT=/usr/local/bin/fcgiwrap
+
+/usr/bin/spawn-fcgi -s $SOCKET -P $PIDFILE -u $FASTCGI_USER -g $FASTCGI_GROUP -- $CGIT
+
+Now let us create a script to automate the start/respawning of this script. Create a file cgit-fastcgi in the /etc/init.d directory with the following contents.
+
+#!/bin/bash
+
+CGIT_SCRIPT=/usr/local/bin/cgit-fcgiwrap
+FASTCGI_USER=www-data
+FASTCGI_GROUP=www-data
+PID_DIR=/var/run/cgit-fastcgi
+PID_FILE=/var/run/cgit-fastcgi/cgit-fastcgi.pid
+RET_VAL=0
+
+case "$1" in
+  start)
+    if [[ ! -d $PID_DIR ]]
+    then
+      mkdir $PID_DIR
+      chown $FASTCGI_USER:$FASTCGI_GROUP $PID_DIR
+      chmod 0770 $PID_DIR
+    fi
+    if [[ -r $PID_FILE ]]
+    then
+      echo "cgit-fastcgi already running with PID `cat $PID_FILE`"
+      RET_VAL=1
+    else
+      $CGIT_SCRIPT
+      RET_VAL=$?
+    fi
+  ;;
+  stop)
+    if [[ -r $PID_FILE ]]
+    then
+      kill `cat $PID_FILE`
+      rm $PID_FILE
+      RET_VAL=$?
+    else
+      echo "Could not find PID file $PID_FILE"
+      RET_VAL=1
+    fi
+  ;;
+  restart)
+    if [[ -r $PID_FILE ]]
+    then
+      kill `cat $PID_FILE`
+      rm $PID_FILE
+      RET_VAL=$?
+    else
+      echo "Could not find PID file $PID_FILE"
+    fi
+    $CGIT_SCRIPT
+    RET_VAL=$?
+  ;;
+  status)
+    if [[ -r $PID_FILE ]]
+    then
+      echo "cgit-fastcgi running with PID `cat $PID_FILE`"
+      RET_VAL=$?
+    else
+      echo "Could not find PID file $PID_FILE, cgit-fastcgi does not appear to be running"
+    fi
+  ;;
+  *)
+    echo "Usage: cgit-fastcgi {start|stop|restart|status}"
+    RET_VAL=1
+  ;;
+esac
+
+exit $RET_VAL
+
+Make it executable and mark it to start at system boot.
+
+sudo chmod +x /etc/init.d/cgit-fastcgi
+sudo update-rc.d cgit-fastcgi defaults
+
+Now create the nginx configuration for cgit. Create the file cgit in the /etc/nginx/sites-available directory with the following contents.
+
+server {
+  listen      80;
+  server_name localhost;
+
+  access_log  /var/log/nginx/cgit-access.log;
+  error_log   /var/log/nginx/cgit-error.log;
+
+  location /git {
+    gzip off;
+    alias /usr/local/cgit/share;
+
+    # We’d like to have static files like cgit.{png,css} in the same
+    # (virtual) directory
+    try_files $uri @cgit;
+  }
+
+  location @cgit {
+    fastcgi_pass   unix:/var/run/cgit-fastcgi/cgit-fastcgi.socket;
+
+    fastcgi_param  QUERY_STRING       $query_string;
+    fastcgi_param  REQUEST_METHOD     $request_method;
+    fastcgi_param  CONTENT_TYPE       $content_type;
+    fastcgi_param  CONTENT_LENGTH     $content_length;
+
+    fastcgi_param  REQUEST_URI        $request_uri;
+    fastcgi_param  DOCUMENT_URI       $document_uri;
+    fastcgi_param  SERVER_PROTOCOL    $server_protocol;
+
+    fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;
+    fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;
+
+    fastcgi_param  REMOTE_ADDR        $remote_addr;
+    fastcgi_param  REMOTE_PORT        $remote_port;
+    fastcgi_param  SERVER_ADDR        $server_addr;
+    fastcgi_param  SERVER_PORT        $server_port;
+    fastcgi_param  SERVER_NAME        $server_name;
+
+    # Tell nginx to consider everything after /git as PATH_INFO. This way
+    # we get nice, clean URL’s
+    fastcgi_split_path_info           ^(/git)(/?.+)$;
+
+    # Unfortunately the version of fcgiwrap currently available in Debian
+    # squeeze removes the PATH_INFO variable from the CGI environment and
+    # sets a new one based on DOCUMENT_ROOT and SCRIPT_NAME, so the line
+    # below won’t work
+    #fastcgi_param  PATH_INFO         $fastcgi_path_info;
+    # Tell fcgiwrap about the binary we’d like to execute and cgit about
+    # the path we’d like to access.
+    fastcgi_param  SCRIPT_NAME        /cgit.cgi$fastcgi_path_info;
+    fastcgi_param  DOCUMENT_ROOT      /usr/local/cgit/bin;
+  }
+}
+
+Enable this site by running the following command
+
+sudo ln -s /etc/nginx/sites-available/cgit /etc/nginx/sites-enabled/cgit
+
+cgit requires a configuration file, /etc/cgitrc to inform it of the repositories and other configuration. So create a file cgitrc in the /etc directory with the following content.
+
+# Url which will be used as root for all cgit links
+virtual-root=/git/
+
+# Url which specifies the source of an image which will be used as a logo on all cgit pages
+logo=/git/cgit.png
+
+# Url which specifies the css document to include in all cgit pages
+css=/git/cgit.css
+
+# Repository configuration
+repo.url=cgit.git
+repo.path=/srv/repositories/cgit.git
+repo.desc=Cgit Repo
+
+Here I have mirrored the cgit repository to /src/repositories/cgit.git and added that in the configuration. Lets go ahead and do that to complete the configuration.
+
+sudo mkdir -p /srv/repositories
+sudo chmod ugo+rwx /srv/repositories
+cd /srv/repositories
+git clone --mirror http://hjemli.net/git/cgit
+sudo chown -R www-data:www-data /srv/repositories
+
+You could also create a new user to administer the repositories instead of giving everyone write permission to /srv/repositories.
+
+Now restart nginx and start cgit-fastcgi to get the web interface running at http://localhost/git/.
+
+sudo service nginx restart
+sudo service cgit-fastcgi start
