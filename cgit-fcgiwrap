@@ -1,0 +1,12 @@
+#!/bin/bash
+
+#It has to be kept under /usr/local/bin/
+#It will create unix socket for nginx to pass the requests.
+
+FASTCGI_USER=www-data
+FASTCGI_GROUP=www-data
+SOCKET=/var/run/cgit-fastcgi/cgit-fastcgi.socket
+PIDFILE=/var/run/cgit-fastcgi/cgit-fastcgi.pid
+CGIT=/usr/local/bin/fcgiwrap
+
+/usr/bin/spawn-fcgi -s $SOCKET -P $PIDFILE -u $FASTCGI_USER -g $FASTCGI_GROUP -- $CGIT
