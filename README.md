@@ -1,2 +1,5 @@
 # cgit-fcgiwrap-nginx
-Step by step configuration of cgit on nginix web server
+
+Follow the my wiki for step-by-step cgit-nginx configuration:
+
+https://github.com/anujsharma12feb/cgit-fcgiwrap-nginx/wiki
