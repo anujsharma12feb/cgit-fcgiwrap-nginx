@@ -216,3 +216,6 @@ Now restart nginx and start cgit-fastcgi to get the web interface running at htt
 
 sudo service nginx restart
 sudo service cgit-fastcgi start
+
+To configure nginx error page:
+https://www.digitalocean.com/community/tutorials/how-to-configure-nginx-to-use-custom-error-pages-on-ubuntu-14-04
